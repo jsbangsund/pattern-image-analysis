@@ -1,13 +1,16 @@
 ###################################################################
 # Imports
 # sci-kit image
-from skimage import exposure
-from skimage.color import rgb2gray
-from skimage import color
-from skimage.util import crop
-from skimage.transform import rotate
-from skimage import color
-from skimage.measure import profile_line
+try:
+    from skimage import exposure
+    from skimage.color import rgb2gray
+    from skimage import color
+    from skimage.util import crop
+    from skimage.transform import rotate
+    from skimage import color
+    from skimage.measure import profile_line
+except:
+    print('skimage not installed. image functions may not work')
 from scipy import ndimage, misc
 from scipy.signal import argrelextrema
 from scipy.optimize import curve_fit
@@ -364,36 +367,76 @@ def line_profile_dspacing(image,line,mag,unit='um',length_per_pixel=None):
     return d,profile,x,peak_idx
     
 ##### FFT analysis
-def radial_profile_fft(img,scale,factor=300):
+def radial_profile_fft(fft_img,scale,factor=300):
     '''
-    scale is length/pixel conversion for x
-    factor defines how many bins are integrated over
-    because the integration method uses integer bins
+    This function takes a 2D fft of an image and integrates azimuthally
+    to generate a one dimensional frequency distribution function
+    i.e. power density (radial_profile) vs. 1/length (k)
+    
+    Inputs:
+    fft_img = numpy array of an fft image, created by e.g.:
+            img = imageio.imread(image_file)
+            gray_image = rgb2gray(img)
+            # Rescale to 0-255 (instead of 0-1)
+            gray_image = ((gray_image - np.min(gray_image))/
+                         (np.max(gray_image) - np.min(gray_image)))
+            # Take FFT and shift so 0 frequency is at center
+            fft_image=fftpack.fft2(gray_image)
+    scale = length/pixel conversion for x
+    factor = integer, how many bins are integrated over 
+    
+    Outputs:
+    k = wavevector, or 1/length spatial frequency
+    radial_profile = azimuthally averaged radial profile of a 2D fft image
     '''
     # Get frequency wavenumbers based on image size
     # Then shift so that center of image is 0 frequency
-    # I don't totally understand this, but it works
-    ky = np.fft.fftshift(np.fft.fftfreq(img.shape[0], 
+    ky = np.fft.fftshift(np.fft.fftfreq(fft_img.shape[0], 
                                         scale)) 
-    kx = np.fft.fftshift(np.fft.fftfreq(img.shape[1], 
+    kx = np.fft.fftshift(np.fft.fftfreq(fft_img.shape[1], 
                                             scale))
-    kx=kx*np.ones(img.shape)
+    kx=kx*np.ones(fft_img.shape)
     #[:,None] changes shape from (N,) to (N,1)
     #identical to ky.reshape((ky.shape[0],1))
-    ky=ky[:,None]*np.ones(img.shape)
+    ky=ky[:,None]*np.ones(fft_img.shape)
     k = np.sqrt(kx**2 + ky**2)*factor
     k=k.ravel().astype(np.int)
     # Average azimuthally
-    tbin = np.bincount(k, img.ravel())
+    # See: https://stackoverflow.com/a/21242776
+    tbin = np.bincount(k, fft_img.ravel())
     nr = np.bincount(k)
     radialprofile = tbin / nr
     k=np.indices((radialprofile.shape))[0]/factor
     # return arrays without region near origin
+    # as this region is often saturated
     s_idx = 10#np.where(1/k < 10)[0][0]
     return k[s_idx:],radialprofile[s_idx:]
 
 def d_from_fft(image,scale=micron_per_pixel['50x'],order=20,factor=100,
               d_lower=0.7,d_upper=1.8):
+    '''
+    This function identifies the primary periodic lengthscale, d, from an image
+    by taking an FFT, azimuthally integrating, and finding relative extrema in this
+    power density distribution.
+    
+    Inputs:
+    image = numpy array of an image, created by e.g. imageio.imread(image_file)
+    scale = length/pixel conversion for x
+    order = How many points on each side to use for the comparison to consider, 
+            passed to argrelextrema, see docs: 
+    https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.argrelextrema.html
+    factor = integer, how many bins are integrated over, passed to radial_profile_fft
+    d_lower = lower d-spacing bound to search for peaks. Must have same units as scale
+    d_upper = lower d-spacing bound to search for peaks. Must have same units as scale
+    
+    Outputs:
+    dictionary containing keys:
+        d_peak = primary peak_idx
+        k = wavevector, or 1/length spatial frequency, from radial_profile_fft
+        radial = azimuthally averaged radial profile of a 2D fft image
+        peak_idx = list of peak indices identified by argrelextrema
+                   use d = 1/k[peak_idx] to get all identified periodicity peaks            
+    '''
     gray_image = rgb2gray(image)
     # Rescale to 0-255 (instead of 0-1)
     gray_image = ((gray_image - np.min(gray_image))/
